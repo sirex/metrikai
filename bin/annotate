@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+
+import sys
+import logging
+
+from argparse import ArgumentParser
+from subprocess import run
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument('what', choices=('pos', 'neg'))
+    args = parser.parse_args()
+
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.DEBUG)
+
+    logging.info("starting annotation tool")
+    run([
+        'opencv_annotation',
+        f'--annotations={args.what}.txt',
+        '--images=train',
+    ])
+    logging.info("done")
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

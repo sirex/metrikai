@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+
+import array
+import sys
+import logging
+import struct
+import os
+import numpy as np
+
+from argparse import ArgumentParser
+from itertools import count
+from subprocess import run
+from glob import glob
+
+from cv2 import imread
+from cv2 import imwrite
+
+
+# borrowed from https://github.com/wulfebw/mergevec
+def merge_vec_files(vec_directory, output_vec_file):
+    """
+    Iterates throught the .vec files in a directory and combines them.
+    (1) Iterates through files getting a count of the total images in the .vec files
+    (2) checks that the image sizes in all files are the same
+    The format of a .vec file is:
+    4 bytes denoting number of total images (int)
+    4 bytes denoting size of images (int)
+    2 bytes denoting min value (short)
+    2 bytes denoting max value (short)
+    ex:     6400 0000 4605 0000 0000 0000
+        hex     6400 0000   4605 0000       0000        0000
+                # images    size of h * w       min     max
+        dec         100         1350            0       0
+    :type vec_directory: string
+    :param vec_directory: Name of the directory containing .vec files to be combined.
+                Do not end with slash. Ex: '/Users/username/Documents/vec_files'
+    :type output_vec_file: string
+    :param output_vec_file: Name of aggregate .vec file for output.
+        Ex: '/Users/username/Documents/aggregate_vec_file.vec'
+    """
+
+    # Check that the .vec directory does not end in '/' and if it does, remove it.
+    if vec_directory.endswith('/'):
+        vec_directory = vec_directory[:-1]
+    # Get .vec files
+    files = glob('{0}/*.vec'.format(vec_directory))
+
+    # Check to make sure there are .vec files in the directory
+    if len(files) <= 0:
+        logging.error("Vec files to be mereged could not be found from directory: %s", vec_directory)
+        sys.exit(1)
+    # Check to make sure there are more than one .vec files
+    if len(files) == 1:
+        logging.error("Only 1 vec file was found in directory: %s. Cannot merge a single file.", vec_directory)
+        sys.exit(1)
+
+    # Get the value for the first image size
+    prev_image_size = 0
+    try:
+        with open(files[0], 'rb') as vecfile:
+            content = b''.join((line) for line in vecfile.readlines())
+            val = struct.unpack('<iihh', content[:12])
+            prev_image_size = val[1]
+    except IOError:
+        logging.exception('An IO error occured while processing the file: %s', files[0])
+        raise
+
+    # Get the total number of images
+    total_num_images = 0
+    for f in files:
+        try:
+            with open(f, 'rb') as vecfile:
+                content = b''.join((line) for line in vecfile.readlines())
+                val = struct.unpack('<iihh', content[:12])
+                num_images = val[0]
+                image_size = val[1]
+                if image_size != prev_image_size:
+                    err_msg = """The image sizes in the .vec files differ. These values must be the same. \n The image size of file {0}: {1}\n
+                        The image size of previous files: {0}""".format(f, image_size, prev_image_size)
+                    sys.exit(err_msg)
+
+                total_num_images += num_images
+        except IOError:
+            logging.exception('An IO error occured while processing the file: %s', f)
+            raise
+
+    # Iterate through the .vec files, writing their data (not the header) to the output file
+    # '<iihh' means 'little endian, int, int, short, short'
+    header = struct.pack('<iihh', total_num_images, image_size, 0, 0)
+    with open(output_vec_file, 'wb') as outputfile:
+        outputfile.write(header)
+
+        for f in files:
+            with open(f, 'rb') as vecfile:
+                content = b''.join((line) for line in vecfile.readlines())
+                outputfile.write(bytearray(content[12:]))
+
+
+# borrowed from https://stackoverflow.com/a/32137408/475477
+def read_vec_file(filename, w=24, h=24):
+    with open(filename, 'rb') as f:
+        n, size, _, _ = struct.unpack('<iihh', f.read(12))
+        for i in range(n):
+            f.read(1)  # read gap byte
+            d = array.array('h', f.read(size * 2))
+            yield np.array(d, np.uint8).reshape(h, w)
+
+
+def read_train_images(filename):
+    with open(filename) as f:
+        for line in f:
+            spl = line.split()
+            n = int(spl[1])
+            for i in range(2, n * 4, 4):
+                x, y, w, h = map(int, spl[i:i + 4])
+                yield spl[0], x, y, w, h
+
+
+def main():
+    parser = ArgumentParser(add_help=False)
+    parser.add_argument('--pos', default='pos.txt', help="pos.txt file with positive samples")
+    parser.add_argument('--neg', default='neg.txt', help="neg.txt file with negative samples")
+    parser.add_argument('-w', default=24, type=int)
+    parser.add_argument('-h', default=24, type=int)
+    parser.add_argument('--help', action='store_true')
+    args = parser.parse_args()
+
+    if args.help:
+        parser.print_help()
+        return 1
+
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.DEBUG)
+
+    # Count how many positive samples we have.
+    num_pos = sum(1 for x in read_train_images(args.pos))
+    logging.info("found %s positive train samples", num_pos)
+
+    # Extract negative images from bg.txt.in to neg/
+    c = count(1)
+    num_neg = 0
+    for x in glob('neg/*.jpg'):
+        os.unlink(x)
+    with open('bg.txt', 'w') as f:
+        for path, x, y, w, h in read_train_images(args.neg):
+            im = imread(path)
+            out = f'neg/{next(c)}.jpg'
+            imwrite(out, im[y:y + h, x:x + w])
+            f.write(out + '\n')
+            num_neg += 1
+    logging.info("found %s negative train samples", num_neg)
+
+    # Validate input data.
+    # if num_neg * 2 > num_pos:
+    #     logging.error("ratio of positive:negative samples should be 2:1")
+    #     return 1
+
+    # Generate vector file
+    logging.info("generate vector file")
+    num_pos_gen = 2000
+    for x in glob('vec/*.vec'):
+        os.unlink(x)
+    for x in glob('pos/*.jpg'):
+        os.unlink(x)
+    for i, (path, x, y, w, h) in enumerate(read_train_images(args.pos), 1):
+        im = imread(path)
+        out = f'pos/{i}.jpg'
+        imwrite(out, im[y:y + h, x:x + w])
+        run([
+            'opencv_createsamples',
+            '-img', out,
+            '-vec', f'vec/{i}.vec',
+            '-bg', 'bg.txt',
+            '-num', str(num_pos_gen // num_pos + 1),
+            '-w', str(args.w),
+            '-h', str(args.h),
+        ])
+    merge_vec_files('vec', 'pos.vec')
+
+    # num_neg_gen = 1000
+    # for x in glob('vec/*.vec'):
+    #     os.unlink(x)
+    # for x in glob('neg/*.jpg'):
+    #     os.unlink(x)
+    # for i, (path, x, y, w, h) in enumerate(read_train_images(args.pos), 1):
+    #     im = imread(path)
+    #     out = f'neg/{i}.jpg'
+    #     imwrite(out, im[y:y + h, x:x + w])
+    #     run([
+    #         'opencv_createsamples',
+    #         '-img', out,
+    #         '-vec', f'vec/{i}.vec',
+    #         '-bg', 'bg.txt',
+    #         '-num', str(num_neg_gen // num_neg),
+    #         '-w', str(args.w),
+    #         '-h', str(args.h),
+    #     ])
+    # merge_vec_files('vec', 'pos.vec')
+
+    # Train cascade
+    logging.info("train cascade")
+
+    run([
+        'opencv_traincascade',
+        '-data', 'data',
+        '-vec', 'pos.vec',
+        '-bg', 'bg.txt',
+        '-numPos', str(num_pos_gen),
+        '-numNeg', str(num_neg),
+        '-numStages', '12',
+        '-minHitRate', '0.999',
+        '-maxFalseAlarmRate', '0.5',
+        '-featureType', 'HAAR',
+        '-w', str(args.w),
+        '-h', str(args.h),
+    ])
+
+    logging.info("done")
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

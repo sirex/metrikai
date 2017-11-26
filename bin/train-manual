@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+
+import argparse
+import itertools
+import logging
+import os
+import sys
+
+import cv2 as cv
+import numpy as np
+
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from sklearn import svm
+
+logger = logging.getLogger(__name__)
+
+
+ALGORITHMS = {
+    'ann': {
+        'class': MLPClassifier,
+        'kwargs': {
+            'solver': 'sgd',
+            'alpha': 1e-8,
+            'max_iter': 100,
+            'tol': 1e-8,
+            'hidden_layer_sizes': (256, 64, 32),
+            'random_state': 1,
+        }
+    },
+    'svm': {
+        'class': svm.SVC,
+        'kwargs': {},
+    },
+}
+
+
+# colors
+blue = (255, 0, 0)
+
+
+def cleanup(im):
+    return cv.adaptiveThreshold(
+        im,
+        255,                             # max value
+        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv.THRESH_BINARY,
+        15,                              # gausian window size
+        16,                              # adaptive threshold value
+    )
+
+
+def image_to_x(im):
+    im = cv.resize(im, (25, 25), interpolation=cv.INTER_CUBIC)
+    return im.reshape((1, 25 * 25))
+
+
+def load_images(path, label):
+    data = np.empty((0, 25 * 25 + 1), dtype=np.uint8)
+    for x in os.listdir(path):
+        im = cv.imread(path + '/' + x, cv.IMREAD_GRAYSCALE)
+        row = np.append([[label]], image_to_x(im), axis=1)
+        data = np.append(data, row, axis=0)
+    return data
+
+
+def load_samples(path):
+    samples = np.concatenate((
+        load_images(os.path.join(path, 'neg'), 0),
+        load_images(os.path.join(path, 'pos'), 1),
+    ), axis=0)
+    np.random.shuffle(samples)
+    X = samples[:, 1:]
+    y = samples[:, 0]
+    return X, y
+
+
+def train(algo, X, y):
+    model = ALGORITHMS[algo]['class'](**ALGORITHMS[algo]['kwargs'])
+    model.fit(X, y)
+    return model
+
+
+def score(algo, X, y):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+    model = train(algo, X, y)
+    logger.info('train set score: %f', model.score(X_train, y_train))
+    logger.info('test set score:  %f', model.score(X_test, y_test))
+
+
+def window(iw, bw, x):
+    pad = bw // 2
+    if x <= pad:
+        return 0, x
+    elif iw - x <= pad:
+        return iw - bw, bw - (iw - x)
+    else:
+        return x - pad, pad
+
+
+def at_the_end(iw, rw, x, mx, step):
+    return x + mx * step >= iw - rw
+
+
+def move(iw, rw, x, mx, step):
+    if x + mx * step < 0:
+        return 0
+    elif at_the_end(iw, rw, x, mx, step):
+        return iw - rw
+    else:
+        return x + mx * step
+
+
+def show_window(im, iw, ih, bw, bh, rw, rh, x, y):
+    bx, rx = window(iw, bw, x)
+    by, ry = window(ih, bh, y)
+
+    win = im[by:by + bh, bx:bx + bw]
+    win = cv.cvtColor(win.copy(), cv.COLOR_GRAY2BGR)
+
+    cv.rectangle(win, (rx, ry), (rx + rw, ry + rh), blue, 1)
+    cv.imshow('im', win)
+
+
+def steering(im, out):
+
+    # cursor movement resizing controls
+    moves = {
+        #    x, y
+        81: (-1, 0),  # left
+        82: (0, -1),  # up
+        83: (1, 0),   # right
+        84: (0, 1),   # down
+    }
+    size = {
+        ord('d'): (1, 1),
+        ord('f'): (-1, -1),
+    }
+
+    # Features
+    save = {
+        ord('e'): 'neg',
+        ord('r'): 'pos',
+    }
+
+    # Initialize image name counters
+    for feature in save.values():
+        if not os.path.exists(os.path.join(out, feature)):
+            os.mkdir(os.path.join(out, feature))
+    imno = {
+        feature: itertools.count(len(os.listdir(os.path.join(out, feature))))
+        for feature in save.values()
+    }
+
+    # absolute cursor position
+    x, y = 0, 0
+
+    # relative cursor position and size in the window box
+    rx, ry = 0, 0
+    rw, rh = 50, 50
+
+    # absolute window box position and size
+    bx, by = 0, 0
+    bw, bh = 600, 400
+
+    # image size
+    ih, iw = im.shape
+
+    # cursor movement speed
+    step = 10
+
+    while True:
+        show_window(im, iw, ih, bw, bh, rw, rh, x, y)
+
+        # handle user input
+        key = cv.waitKey(0)
+        if key in moves:
+            mx, my = moves[key]
+            x = move(iw, rw, x, mx, step)
+            y = move(ih, rh, y, my, step)
+        elif key in size:
+            rw += size[key][0]
+            rh += size[key][1]
+        elif key in save:
+            sample = im[by + ry:by + ry + rh, bx + rx:bx + rx + rw]
+
+            X_samples, y_features = load_samples(out)
+            model = train('svm', X_samples, y_features)
+            result = model.predict(image_to_x(sample))
+
+            print('svm:', result, flush=True)
+
+            path = os.path.join(out, save[key], f'{next(imno[save[key]]):04d}.jpg')
+            cv.imwrite(path, sample)
+        elif key == ord('g'):
+            X_samples, y_features = load_samples(out)
+            while not at_the_end(iw, rw, x + 1, mx, step):
+                x += 1
+                sample = im[by + ry:by + ry + rh, bx + rx:bx + rx + rw]
+        elif key == ord('a'):
+            step = 10 if step == 1 else 1
+        elif key == 27:
+            break
+
+
+def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('-o', '--outupt', default='samples/letters', help="directory where to save picked samples")
+    parser.add_argument('-w', '--width', default=24, type=int, help="resize picked sample to specified witdh")
+    parser.add_argument('-h', '--height', default=24, type=int, help="resize picked sample to specified height")
+    args = parser.parse_args()  # noqa
+
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.DEBUG)
+
+    im = cleanup(cv.imread('samples/epaveldas/004.jpg', cv.IMREAD_GRAYSCALE))
+    steering(im, 'samples/letters')
+
+    cv.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

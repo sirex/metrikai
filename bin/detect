@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+
+import sys
+import logging
+
+from argparse import ArgumentParser
+from pathlib import Path
+
+import cv2 as cv
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument('image')
+    parser.add_argument('-c', '--cascade', default='data/cascade.xml')
+    parser.add_argument('-r', '--result', default='result/result.jpg')
+    args = parser.parse_args()
+
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.DEBUG)
+
+    logging.info("validate input")
+    if not Path(args.image).exists():
+        logging.error("image %s does not exist", args.image)
+        return 1
+
+    if not Path(args.cascade).exists():
+        logging.error("cascade %s does not exist", args.cascade)
+        return 1
+
+    logging.info("load cascade file %s", args.cascade)
+    cascade = cv.CascadeClassifier(args.cascade)
+
+    logging.info("read source image %s", args.image)
+    im = cv.imread(args.image)
+    gr = cv.cvtColor(im, cv.COLOR_BGR2GRAY)
+
+    logging.info("detect features")
+    faces = cascade.detectMultiScale(gr)
+    for i, (x, y, w, h) in enumerate(faces, 1):
+        logging.debug("feature detected: #%s: %sx%s+%s+%s", i, w, h, x, y)
+        cv.rectangle(im, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    logging.info("write results to: %s", args.result)
+    cv.imwrite(args.result, im)
+
+    logging.info("done.")
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)
