@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+
+import collections
+import os
+import pathlib
+import subprocess
+import sys
+
+sys.path.append(str(pathlib.Path(__name__).resolve().parent))  # noqa
+
+
+import click
+import cv2 as cv
+import numpy as np
+import tqdm
+
+from metrikai import cleanup
+from metrikai import show
+from metrikai import scanxy
+from metrikai import im_to_X
+from metrikai import wait_for_key
+
+
+@click.group()
+def main():
+    pass
+
+
+@main.command('download-samples')
+def download_samples():
+    Sample = collections.namedtuple('Sample', ('url', 'num'))
+    languages = {
+        'la': [
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1521/1/20?exId=24294&seqNr={num}', 39),
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1375/1/16?exId=230351&seqNr={num}', 46),
+        ],
+        'ru': [
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1338/1/10?exId=320185&seqNr={num}', 203),
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1360/1/19?exId=97388&seqNr={num}', 155),
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1375/1/8?exId=230381&seqNr={num}', 196),
+        ],
+        'lt': [
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1375/1/27?exId=230345&seqNr={num}', 60),
+            Sample('http://www.epaveldas.lt/recordImageSmall/ARCH/1375/1/24?exId=230346&seqNr={num}', 164),
+        ]
+    }
+
+    total = sum(sample.num for samples in languages.values() for sample in samples)
+
+    with tqdm.tqdm(total=total) as pbar:
+        for language, samples in languages.items():
+            for i, sample in enumerate(samples, 1):
+                os.makedirs(f'samples/epaveldas/{language}/{i:03d}', exist_ok=True)
+                for num in range(1, sample.num + 1):
+                    subprocess.run(['wget', '-q', sample.url.format(num=num),
+                                    '-O', f'samples/epaveldas/{language}/{i:03d}/{num:03d}.jpg'])
+                    pbar.update(1)
+
+
+@main.command()
+def test():
+    im = cleanup(cv.imread('samples/epaveldas/ru/001/004.jpg', cv.IMREAD_GRAYSCALE))
+    ih, iw = im.shape
+    w, h = 25, 25
+
+    samples = np.empty((0, 25 * 25), dtype=np.uint8)
+
+    for x, y in scanxy(im, w, 25):
+        show(im, x, y, w, h)
+
+        samples = np.append(samples, im_to_X(im[y:y + h, x:x + w]), axis=0)
+
+        # if cv.waitKey(100) == 27:
+        #     cv.destroyAllWindows()
+        #     return
+
+    canvas = np.zeros((samples.shape[0] // 40 * 25, 40 * 25))
+    for j in range(samples.shape[0] // 40):
+        for i in range(40):
+            canvas[j * 25:j * 25 + 25, i * 25:i * 25 + 25] = samples[i * j].reshape((25, 25))
+
+    cv.imshow('im', canvas)
+
+    # from sklearn.cluster import KMeans
+
+    # model = KMeans(n_clusters=2, random_state=0)
+    # y = model.fit_predict(X)
+
+    wait_for_key(27)
+    cv.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
