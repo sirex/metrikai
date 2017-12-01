@@ -1,4 +1,5 @@
 import cv2 as cv
+import numpy as np
 
 
 # colors
@@ -39,6 +40,18 @@ def show(im, x, y, w, h):
     cv.imshow('im', win)
 
 
+def show_samples(name, samples, w=40, s=25, grid=128):
+    canvas = np.zeros(((samples.shape[0] // w + 1) * s, w * s))
+    for j in range(samples.shape[0] // w + 1):
+        for i in range(w):
+            if j * w + i < samples.shape[0]:
+                canvas[j * s:j * s + s, i * s:i * s + s] = samples[j * w + i].reshape((s, s))
+                if grid is not None:
+                    canvas[j * s:j * s + s, i * s:i * s + 1] = grid
+                    canvas[j * s + s - 1:j * s + s, i * s:i * s + s] = grid
+    cv.imshow(name, canvas)
+
+
 def scan(iw, w, step):
     for x in range(0, iw - w + 1, step):
         yield x
@@ -49,8 +62,42 @@ def scan(iw, w, step):
 def scanxy(im, w, step):
     ih, iw = im.shape
     for y in scan(ih, w, step):
-        for x in scan(iw, w, 25):
+        for x in scan(iw, w, step):
             yield x, y
+
+
+class SmartScan:
+
+    def __init__(self, im, w, step):
+        self.im = im
+        self.w = w
+        self.step = step
+        self.axes = [0, 0]
+
+    def check(self):
+        y, x = self.axes
+        return self.im[y:y + self.w, x:x + self.w].mean() > 10
+
+    def scan(self, axis):
+        iw = self.im.shape[axis]
+
+        while self.axes[axis] < iw - self.w + 1:
+            yield self.axes[axis]
+
+        if (iw - self.w) > self.axes[axis]:
+            yield iw - self.w
+
+    def scanxy(self):
+        self.axes = [0, 0]
+        for y in self.scan(0):
+            self.axes[1] = 0
+            for x in self.scan(1):
+                if self.check():
+                    yield x, y
+                    self.axes[1] += self.step
+                else:
+                    self.axes[1] += self.w
+            self.axes[0] += self.step
 
 
 def im_to_X(im):
