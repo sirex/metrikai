@@ -1,5 +1,6 @@
 import cv2 as cv
 import numpy as np
+import scipy.signal
 
 
 # colors
@@ -98,6 +99,19 @@ class SmartScan:
                 else:
                     self.axes[1] += self.w
             self.axes[0] += self.step
+
+
+def line_scanxy(im, w, step):
+    ih, iw = im.shape
+    win = scipy.signal.hann(20)
+    for x in range(0, iw - step, step):
+        means = im[:, x:x + (w if x + w < iw else iw)].mean(axis=1)
+        means = scipy.signal.convolve(means, win, mode='same') / sum(win)
+        minimums = scipy.signal.argrelextrema(means, np.less_equal, order=10)[0]
+        minimums = minimums[scipy.signal.convolve(np.diff(minimums), [.5, .5]) > 5]
+        for y, h in zip(minimums, np.diff(minimums)):
+            if x < iw - h + 1 and im[y:y + h, x:x + h].mean() > 10:
+                yield x, y
 
 
 def im_to_X(im):

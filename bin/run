@@ -23,6 +23,7 @@ from metrikai import scanxy  # noqa
 from metrikai import SmartScan
 from metrikai import im_to_X
 from metrikai import wait_for_key  # noqa
+from metrikai import line_scanxy
 
 
 @click.group()
@@ -62,74 +63,133 @@ def download_samples():
 
 
 @main.command()
-def test():
+def lines():
     im = cleanup(cv.imread('samples/epaveldas/ru/001/004.jpg', cv.IMREAD_GRAYSCALE))
     ih, iw = im.shape
 
     x = 0
     while True:
-        y = im[:, x:x + 50].mean(axis=1)
-        y = signal.convolve(y, signal.hann(20))
-        minimums = signal.argrelextrema(y, np.less, order=10)[0]
+        w = 50
 
-        print(np.diff(minimums).std())
+        y = im[:, x:x + w].mean(axis=1)
+        win = signal.hann(20)
+        y = signal.convolve(y, win, mode='same') / sum(win)
+        minimums = signal.argrelextrema(y, np.less_equal, order=10)[0]
+        minimums = minimums[signal.convolve(np.diff(minimums), [.5, .5]) > 5]
 
-        imx = cv.cvtColor(im[:, x:x + 50].copy(), cv.COLOR_GRAY2BGR)
-        imx[minimums, :] = (64, 255, 64)
+        green = (64, 255, 64)
+        blue = (255, 64, 64)
+
+        imx = cv.cvtColor(im[:, x:x + w].copy(), cv.COLOR_GRAY2BGR)
+        imx[minimums, :] = green
+        plot = np.zeros((imx.shape[0], 255, 3), dtype=np.uint8)
+        plot[np.arange(y.shape[0]), y.astype(int)] = blue
+        imx = np.append(imx, plot, axis=1)
         cv.imshow('im', imx)
 
         key = cv.waitKey(0)
         if key == 27:
             break
+        elif key & 0xFF == 81:  # right
+            x = x - 2 if x - 2 >= 0 else 0
         elif key & 0xFF == 83:  # right
-            x += 50
+            x = x + 2 if x + 2 < im.shape[1] - w else im.shape[1] - w
 
     cv.destroyAllWindows()
 
 
 @main.command()
-def test1():
+def clusters():
     im = cleanup(cv.imread('samples/epaveldas/ru/001/004.jpg', cv.IMREAD_GRAYSCALE))
     ih, iw = im.shape
     s = 25
+    xstep = 20
 
+    print('scaning image...', flush=True)
     samples = np.empty((0, s * s), dtype=np.uint8)
-    scanner = SmartScan(im, s, 5)
-
-    import tqdm
-
-    with tqdm.tqdm(total=8000) as pbar:
-        # i = 0
-        for x, y in itertools.islice(scanner.scanxy(), 8000):
-            pbar.update(1)
-            # pbar.update((y * iw + x) - i)
-            # i = y * iw + x
+    # for x, y in itertools.islice(line_scanxy(im, 50, 2), 8000):
+    oldx = 0
+    with tqdm.tqdm(total=iw - 50) as pbar:
+        for x, y in line_scanxy(im, 50, xstep):
+            if x != oldx:
+                oldx = x
+                pbar.update(xstep)
             samples = np.append(samples, im_to_X(im[y:y + s, x:x + s]), axis=0)
 
-    from sklearn.cluster import KMeans
+    print('samples after scan: %r', samples.shape, flush=True)
 
-    n_clusters = 50
-    model = KMeans(n_clusters=n_clusters, random_state=0)
-    clusters = model.fit_predict(samples)
+    n_clusters = 2
 
-    cluster = 0
-    show_samples('im', samples[clusters == cluster], s=s)
+    def predict_kmeans(samples):
+        from sklearn.cluster import KMeans
+        model = KMeans(n_clusters=n_clusters, random_state=0)
+        return model.fit_predict(samples)
+
+    def predict_gausian_mixture(samples):
+        from sklearn.mixture import GaussianMixture
+        model = GaussianMixture(n_components=n_clusters, random_state=0)
+        model.fit(samples)
+        return model.predict(samples)
+
+    def predict_agglomerative_clustering(samples):
+        from sklearn import manifold
+        from sklearn.cluster import AgglomerativeClustering
+        X = manifold.SpectralEmbedding(n_components=n_clusters).fit_transform(samples)
+        model = AgglomerativeClustering(linkage='ward', n_clusters=n_clusters)
+        model.fit(X)
+        return model.labels_
+
+    def predict_dbscan(samples):
+        from sklearn.cluster import DBSCAN
+        model = DBSCAN(eps=0.3, min_samples=n_clusters).fit(samples)
+        return model.labels_
+
+    predict = predict_kmeans
+
+    print('predicting clusters...', end=' ', flush=True)
+    stack = [{
+        'samples': samples,
+        'clusters': predict(samples),
+        'cluster': 0
+    }]
+    stack[-1]['labels'] = sorted(set(stack[-1]['clusters']))
+    print('done.', flush=True)
+
+    show_samples('im', stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']], s=s)
 
     while True:
         key = cv.waitKey(0)
-
         next_cluster = None
+
         if key == 27:
             break
+
         elif key & 0xFF == 81:  # left
-            next_cluster = cluster - 1 if cluster > 0 else n_clusters - 1
+            next_cluster = stack[-1]['cluster'] - 1 if stack[-1]['cluster'] > 0 else len(stack[-1]['labels']) - 1
+
         elif key & 0xFF == 83:  # right
-            next_cluster = cluster + 1 if cluster < n_clusters - 1 else 0
+            next_cluster = stack[-1]['cluster'] + 1 if stack[-1]['cluster'] < len(stack[-1]['labels']) - 1 else 0
+
+        elif key & 0xFF == 82:  # up
+            stack.pop()
+            print('stack size:', len(stack), flush=True)
+            show_samples('im', stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']], s=s)
+
+        elif key & 0xFF == 84:  # down
+            print('predicting clusters...', end=' ', flush=True)
+            stack.append({
+                'samples': stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']],
+                'clusters': predict(stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']]),
+                'cluster': 0,
+            })
+            stack[-1]['labels'] = sorted(set(stack[-1]['clusters']))
+            print('done.', flush=True)
+            show_samples('im', stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']], s=s)
 
         if next_cluster is not None:
-            cluster = next_cluster
-            if samples[clusters == cluster].size > 0:
-                show_samples('im', samples[clusters == cluster], s=s)
+            stack[-1]['cluster'] = next_cluster
+            if stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']].size > 0:
+                show_samples('im', stack[-1]['samples'][stack[-1]['clusters'] == stack[-1]['cluster']], s=s)
 
     cv.destroyAllWindows()
 
