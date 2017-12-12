@@ -2,6 +2,7 @@ import numpy as np
 
 from metrikai import scan
 from metrikai import SmartScan
+from metrikai import rotate
 
 
 def test_scan():
@@ -21,3 +22,19 @@ def test_smart_scan():
 
     im[6:9, 6:9] = 255
     assert list(scanner.scanxy()) == [(5, 5)]
+
+
+def test_rotate():
+    assert rotate(0, 3, 1) == 1
+    assert rotate(1, 3, 1) == 2
+    assert rotate(2, 3, 1) == 0
+
+    assert rotate(0, 3, -1) == 2
+    assert rotate(2, 3, -1) == 1
+    assert rotate(1, 3, -1) == 0
+
+    assert rotate(0, 3, 7) == 1
+    assert rotate(1, 3, 7) == 2
+
+    assert rotate(0, 3, -7) == 2
+    assert rotate(1, 3, -7) == 0

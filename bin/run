@@ -5,7 +5,6 @@ import os
 import pathlib
 import subprocess
 import sys
-import itertools
 
 sys.path.append(str(pathlib.Path(__name__).resolve().parent))  # noqa
 
@@ -20,10 +19,11 @@ from metrikai import cleanup
 from metrikai import show  # noqa
 from metrikai import show_samples
 from metrikai import scanxy  # noqa
-from metrikai import SmartScan
+from metrikai import SmartScan  # noqa
 from metrikai import im_to_X
 from metrikai import wait_for_key  # noqa
 from metrikai import line_scanxy
+from metrikai import rotate
 
 
 @click.group()
@@ -67,23 +67,48 @@ def lines():
     im = cleanup(cv.imread('samples/epaveldas/ru/001/004.jpg', cv.IMREAD_GRAYSCALE))
     ih, iw = im.shape
 
+    winsize = 20
+    windows = [
+        ('hann', signal.hann(winsize)),
+        ('barthann', signal.barthann(winsize)),
+        ('bartlett', signal.bartlett(winsize)),
+        ('blackman', signal.blackman(winsize)),
+        ('blackmanharris', signal.blackmanharris(winsize)),
+        ('boxcar', signal.boxcar(winsize)),
+        ('cosine', signal.cosine(winsize)),
+        ('exponential', signal.exponential(winsize)),
+        ('flattop', signal.flattop(winsize)),
+        ('gaussian(std=7)', signal.gaussian(winsize, std=7)),
+        ('hamming', signal.hamming(winsize)),
+        ('hanning', signal.hanning(winsize)),
+        ('kaiser(beta=1)', signal.kaiser(winsize, beta=1)),
+        ('nuttall', signal.nuttall(winsize)),
+        ('parzen', signal.parzen(winsize)),
+        ('slepian(width=10)', signal.slepian(winsize, width=10)),
+        ('triang', signal.triang(winsize)),
+        ('tukey', signal.tukey(winsize)),
+    ]
+    currwin = 0
+
     x = 0
     while True:
         w = 50
 
         y = im[:, x:x + w].mean(axis=1)
-        win = signal.hann(20)
+        wintitle, win = windows[currwin]
         y = signal.convolve(y, win, mode='same') / sum(win)
         minimums = signal.argrelextrema(y, np.less_equal, order=10)[0]
         minimums = minimums[signal.convolve(np.diff(minimums), [.5, .5]) > 5]
 
+        white = (255, 255, 255)
         green = (64, 255, 64)
         blue = (255, 64, 64)
 
         imx = cv.cvtColor(im[:, x:x + w].copy(), cv.COLOR_GRAY2BGR)
         imx[minimums, :] = green
         plot = np.zeros((imx.shape[0], 255, 3), dtype=np.uint8)
-        plot[np.arange(y.shape[0]), y.astype(int)] = blue
+        cv.polylines(plot, [np.array([y, range(y.shape[0])]).astype(np.int32).T], False, blue, 1, cv.LINE_AA)
+        cv.putText(plot, wintitle, (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, white, 1, cv.LINE_AA)
         imx = np.append(imx, plot, axis=1)
         cv.imshow('im', imx)
 
@@ -94,6 +119,10 @@ def lines():
             x = x - 2 if x - 2 >= 0 else 0
         elif key & 0xFF == 83:  # right
             x = x + 2 if x + 2 < im.shape[1] - w else im.shape[1] - w
+        elif key & 0xFF == 82:  # up
+            currwin = rotate(currwin, len(windows), 1)
+        elif key & 0xFF == 84:  # down
+            currwin = rotate(currwin, len(windows), -1)
 
     cv.destroyAllWindows()
 

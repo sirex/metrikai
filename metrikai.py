@@ -122,3 +122,11 @@ def im_to_X(im):
 def wait_for_key(key):
     while cv.waitKey(0) != key:
         pass
+
+
+def rotate(i, n, d):
+    j = i + d
+    if j > n - 1 or j < 0:
+        return j % n
+    else:
+        return j
