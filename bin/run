@@ -64,16 +64,27 @@ def download_samples():
 
 @main.command()
 def lines():
-    im = cleanup(cv.imread('samples/epaveldas/ru/001/004.jpg', cv.IMREAD_GRAYSCALE))
+    sample = 0
+    samples = [
+        'samples/epaveldas/ru/001/004.jpg',
+        'samples/epaveldas/ru/002/004.jpg',
+        'samples/epaveldas/ru/003/004.jpg',
+        'samples/epaveldas/lt/001/004.jpg',
+        'samples/epaveldas/lt/002/004.jpg',
+        'samples/epaveldas/la/001/004.jpg',
+        'samples/epaveldas/la/002/004.jpg',
+    ]
+
+    im = cleanup(cv.imread(samples[sample], cv.IMREAD_GRAYSCALE))
     ih, iw = im.shape
 
     winsize = 20
     windows = [
+        ('blackman', signal.blackman(winsize)),
+        ('blackmanharris', signal.blackmanharris(winsize)),
         ('hann', signal.hann(winsize)),
         ('barthann', signal.barthann(winsize)),
         ('bartlett', signal.bartlett(winsize)),
-        ('blackman', signal.blackman(winsize)),
-        ('blackmanharris', signal.blackmanharris(winsize)),
         ('boxcar', signal.boxcar(winsize)),
         ('cosine', signal.cosine(winsize)),
         ('exponential', signal.exponential(winsize)),
@@ -88,14 +99,17 @@ def lines():
         ('triang', signal.triang(winsize)),
         ('tukey', signal.tukey(winsize)),
     ]
-    currwin = 0
+    # currwin = 0
+    gaussian_window_std = 7
 
     x = 0
     while True:
-        w = 50
+        w = 100
 
         y = im[:, x:x + w].mean(axis=1)
-        wintitle, win = windows[currwin]
+        # wintitle, win = windows[currwin]
+        win = signal.gaussian(winsize, std=gaussian_window_std)
+        wintitle = f'gaussian(std={gaussian_window_std})'
         y = signal.convolve(y, win, mode='same') / sum(win)
         minimums = signal.argrelextrema(y, np.less_equal, order=10)[0]
         minimums = minimums[signal.convolve(np.diff(minimums), [.5, .5]) > 5]
@@ -112,6 +126,7 @@ def lines():
         imx = np.append(imx, plot, axis=1)
         cv.imshow('im', imx)
 
+        reload = False
         key = cv.waitKey(0)
         if key == 27:
             break
@@ -120,9 +135,23 @@ def lines():
         elif key & 0xFF == 83:  # right
             x = x + 2 if x + 2 < im.shape[1] - w else im.shape[1] - w
         elif key & 0xFF == 82:  # up
-            currwin = rotate(currwin, len(windows), 1)
+            # currwin = rotate(currwin, len(windows), 1)
+            gaussian_window_std += 1
         elif key & 0xFF == 84:  # down
-            currwin = rotate(currwin, len(windows), -1)
+            # currwin = rotate(currwin, len(windows), -1)
+            if gaussian_window_std > 1:
+                gaussian_window_std -= 1
+        elif key == ord('a'):
+            sample = rotate(sample, len(samples), 1)
+            reload = True
+        elif key == ord('z'):
+            sample = rotate(sample, len(samples), -1)
+            reload = True
+
+        if reload:
+            im = cleanup(cv.imread(samples[sample], cv.IMREAD_GRAYSCALE))
+            ih, iw = im.shape
+            x = 0
 
     cv.destroyAllWindows()
 
@@ -147,7 +176,7 @@ def clusters():
 
     print('samples after scan: %r', samples.shape, flush=True)
 
-    n_clusters = 2
+    n_clusters = 10
 
     def predict_kmeans(samples):
         from sklearn.cluster import KMeans
