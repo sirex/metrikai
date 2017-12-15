@@ -1,14 +1,16 @@
 import cv2 as cv
 import numpy as np
 import scipy.signal
+import skimage.morphology
+import skimage.filters
 
 
 # colors
 blue = (255, 0, 0)
 
 
-def cleanup(im):
-    return cv.adaptiveThreshold(
+def cleanup(im, remove_lines=False):
+    im = cv.adaptiveThreshold(
         im,
         255,                             # max value
         cv.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -16,6 +18,14 @@ def cleanup(im):
         15,                              # gausian window size
         16,                              # adaptive threshold value
     )
+
+    if remove_lines:
+        # Remove horizontal and vertical lines
+        kernel = skimage.morphology.rectangle(100, 1)
+        mask = skimage.filters.median(im, kernel) | skimage.filters.median(im, kernel.T)
+        im = im & ~mask
+
+    return im
 
 
 def window(iw, bw, x):
@@ -130,3 +140,41 @@ def rotate(i, n, d):
         return j % n
     else:
         return j
+
+
+def italic(slope, yintercept, w, h):
+    if yintercept.size == 0:
+        return np.array([], int), np.array([], int)
+    y = np.arange(h)
+    x = slope * y
+    x = np.pad(x.reshape(1, h), [(0, yintercept.size - 1), (0, 0)], 'edge').T + yintercept
+    x[x < 0] = w + x[x < 0]
+    x[x > w - 1] = x[x > w - 1] % w
+    return y, np.ceil(x.T).astype(int)
+
+
+def move(a, *offset):
+    return [x + o for x, o in zip(a, offset)]
+
+
+def find_slope(im, axis=0):
+    h, w = im.shape
+    window = scipy.signal.blackman(5)
+    slopes = []
+    maxima_means = []
+    for i in range(21):
+        slope = i * -0.05
+        medians = np.median(im[italic(slope, np.arange(w), w, h)], axis=axis)
+        convolved = scipy.signal.convolve(medians, window, mode='same') / sum(window)
+        maximas = scipy.signal.argrelextrema(convolved, np.greater, order=6)[0]
+        slopes.append(slope)
+        maxima_means.append(convolved[maximas].mean() if maximas.size else 0)
+    return slopes[maxima_means.index(max(maxima_means))]
+
+
+def find_lines(im, win, slope, axis=0):
+    h, w = im.shape
+    means = im[italic(slope, np.arange(w), w, h)].mean(axis=axis)
+    means = scipy.signal.convolve(means, win, mode='same') / sum(win)
+    minimas = scipy.signal.argrelextrema(means, np.less_equal, order=10)[0]
+    return minimas[scipy.signal.convolve(np.diff(minimas), [.5, .5]) > 5]

@@ -24,6 +24,10 @@ from metrikai import im_to_X
 from metrikai import wait_for_key  # noqa
 from metrikai import line_scanxy
 from metrikai import rotate
+from metrikai import find_lines
+from metrikai import find_slope
+from metrikai import move
+from metrikai import italic
 
 
 @click.group()
@@ -102,9 +106,10 @@ def lines():
     # currwin = 0
     gaussian_window_std = 7
 
-    x = 0
+    initialx = 284
+    x = initialx
     while True:
-        w = 100
+        w = 200
 
         y = im[:, x:x + w].mean(axis=1)
         # wintitle, win = windows[currwin]
@@ -114,12 +119,41 @@ def lines():
         minimums = signal.argrelextrema(y, np.less_equal, order=10)[0]
         minimums = minimums[signal.convolve(np.diff(minimums), [.5, .5]) > 5]
 
+        # w = int(np.ceil(np.diff(minimums).mean()))
+
         white = (255, 255, 255)
         green = (64, 255, 64)
         blue = (255, 64, 64)
 
         imx = cv.cvtColor(im[:, x:x + w].copy(), cv.COLOR_GRAY2BGR)
         imx[minimums, :] = green
+
+        for ly, lh in zip(minimums, np.diff(minimums)):
+            window = signal.blackman(5)
+            slopes = []
+            median_maximums = []
+            for i in range(21):
+                slope = i * -0.05
+                medians = np.median(im[move(italic(slope, np.arange(w), w, lh), ly, x)], axis=1)
+                convolved = signal.convolve(medians, window, mode='same') / sum(window)
+                maximums = signal.argrelextrema(convolved, np.greater, order=6)[0]
+                slopes.append(slope)
+                median_maximums.append(convolved[maximums].mean() if maximums.size else 0)
+
+            # slope = -0.7
+            slope = slopes[median_maximums.index(max(median_maximums))]
+
+            # means = im[ly:ly + lh, x:x + w].mean(axis=0)
+            means = im[move(italic(slope, np.arange(w), w, lh), ly, x)].mean(axis=1)
+
+            window = signal.gaussian(6, std=gaussian_window_std)
+            convolved = signal.convolve(means, window, mode='same') / sum(window)
+            line_minimums = signal.argrelextrema(convolved, np.less_equal, order=6)[0]
+            if line_minimums.size > 2:
+                line_minimums = line_minimums[signal.convolve(np.diff(line_minimums), [.5, .5], mode='full') > 5]
+                # imx[ly:ly + lh, line_minimums] = green
+                imx[move(italic(slope, line_minimums, w - 1, lh), ly, 0)] = green
+
         plot = np.zeros((imx.shape[0], 255, 3), dtype=np.uint8)
         cv.polylines(plot, [np.array([y, range(y.shape[0])]).astype(np.int32).T], False, blue, 1, cv.LINE_AA)
         cv.putText(plot, wintitle, (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, white, 1, cv.LINE_AA)
@@ -151,7 +185,67 @@ def lines():
         if reload:
             im = cleanup(cv.imread(samples[sample], cv.IMREAD_GRAYSCALE))
             ih, iw = im.shape
-            x = 0
+            x = initialx
+
+    cv.destroyAllWindows()
+
+
+@main.command()
+def train():
+    sample = 0
+    samples = [
+        'samples/epaveldas/ru/001/004.jpg',
+        'samples/epaveldas/ru/002/004.jpg',
+        'samples/epaveldas/ru/003/004.jpg',
+        'samples/epaveldas/lt/001/004.jpg',
+        'samples/epaveldas/lt/002/004.jpg',
+        'samples/epaveldas/la/001/004.jpg',
+        'samples/epaveldas/la/002/004.jpg',
+    ]
+
+    w = 200
+    reload = True
+    initialx = x = 284
+    while True:
+        if reload:
+            reload = False
+
+            # im = cv.imread(samples[sample])
+            # cv.imshow('orig', im)
+
+            im = cv.imread(samples[sample], cv.IMREAD_GRAYSCALE)
+            im = im[:400, :500]
+            im = cleanup(im, remove_lines=True)
+            ih, iw = im.shape
+            x = initialx
+
+            winsize = 20
+            kernel = signal.gaussian(winsize, std=2)
+            slope = find_slope(im, axis=0)
+            lines = find_lines(im, kernel, slope, axis=0)
+            im[italic(slope, lines, iw, ih)] = 255
+
+            cv.imshow('im', im)
+
+        key = cv.waitKey(0)
+        if key == 27:
+            break
+        elif key & 0xFF == 81:  # right
+            x = x - 2 if x - 2 >= 0 else 0
+        elif key & 0xFF == 83:  # right
+            x = x + 2 if x + 2 < im.shape[1] - w else im.shape[1] - w
+        elif key & 0xFF == 82:  # up
+            pass
+            # currwin = rotate(currwin, len(windows), 1)
+        elif key & 0xFF == 84:  # down
+            pass
+            # currwin = rotate(currwin, len(windows), -1)
+        elif key == ord('a'):
+            sample = rotate(sample, len(samples), 1)
+            reload = True
+        elif key == ord('z'):
+            sample = rotate(sample, len(samples), -1)
+            reload = True
 
     cv.destroyAllWindows()
 
